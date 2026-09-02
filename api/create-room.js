@@ -5,6 +5,7 @@ import {
   normalizeName,
   randomPlayerId,
   randomRoomCode,
+  readBody,
   signRoomToken,
 } from "./_shared.js";
 
@@ -13,7 +14,8 @@ const TTL_MS = 1000 * 60 * 60 * 4;
 export default async function handler(req, res) {
   if (!methodGuard(req, res, "POST")) return;
 
-  const name = normalizeName(req.body?.name || "Host");
+  const body = await readBody(req);
+  const name = normalizeName(body?.name || "Host");
   if (!name) {
     json(res, 400, { ok: false, error: "invalid_name" });
     return;

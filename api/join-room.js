@@ -4,6 +4,7 @@ import {
   methodGuard,
   normalizeName,
   randomPlayerId,
+  readBody,
   signRoomToken,
 } from "./_shared.js";
 
@@ -12,8 +13,9 @@ const TTL_MS = 1000 * 60 * 60 * 4;
 export default async function handler(req, res) {
   if (!methodGuard(req, res, "POST")) return;
 
-  const roomCode = String(req.body?.roomCode || "").trim();
-  const name = normalizeName(req.body?.name || "");
+  const body = await readBody(req);
+  const roomCode = String(body?.roomCode || "").trim();
+  const name = normalizeName(body?.name || "");
 
   if (!/^\d{4}$/.test(roomCode)) {
     json(res, 400, { ok: false, error: "invalid_room_code" });

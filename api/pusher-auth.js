@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { json, methodGuard, verifyRoomToken } from "./_shared.js";
+import { json, methodGuard, readBody, verifyRoomToken } from "./_shared.js";
 
 function pusherPresenceAuth({ socketId, channel, userId, userInfo }) {
   const key = process.env.PUSHER_KEY;
@@ -24,10 +24,11 @@ function pusherPresenceAuth({ socketId, channel, userId, userInfo }) {
 export default async function handler(req, res) {
   if (!methodGuard(req, res, "POST")) return;
 
-  const socketId = req.body?.socket_id;
-  const channel = req.body?.channel_name;
-  const token = req.body?.token;
-  const head = req.body?.head || null;
+  const body = await readBody(req);
+  const socketId = body?.socket_id;
+  const channel = body?.channel_name;
+  const token = body?.token;
+  const head = body?.head || null;
 
   if (!socketId || !channel || !token) {
     json(res, 400, { ok: false, error: "missing_fields" });
@@ -46,16 +47,22 @@ export default async function handler(req, res) {
     return;
   }
 
-  const auth = pusherPresenceAuth({
-    socketId,
-    channel,
-    userId: claims.playerId,
-    userInfo: {
-      n: claims.name,
-      r: claims.role,
-      h: head,
-    },
-  });
+  let auth;
+  try {
+    auth = pusherPresenceAuth({
+      socketId,
+      channel,
+      userId: claims.playerId,
+      userInfo: {
+        n: claims.name,
+        r: claims.role,
+        h: head,
+      },
+    });
+  } catch (error) {
+    json(res, 500, { ok: false, error: error.message || "auth_failed" });
+    return;
+  }
 
   json(res, 200, auth);
 }

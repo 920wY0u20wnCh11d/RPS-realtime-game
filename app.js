@@ -41,6 +41,7 @@ const state = {
   channelName: "",
   pusher: null,
   channel: null,
+  connectWatchdog: null,
   players: new Map(),
   isHost: false,
   hostTicker: null,
@@ -150,6 +151,11 @@ async function connectSession(session) {
     state.pusher.disconnect();
   }
 
+  if (state.connectWatchdog) {
+    clearTimeout(state.connectWatchdog);
+    state.connectWatchdog = null;
+  }
+
   state.pusher = new Pusher(state.config.key, {
     cluster: state.config.cluster,
     authEndpoint: "/api/pusher-auth",
@@ -161,8 +167,34 @@ async function connectSession(session) {
     },
   });
 
+  state.pusher.connection.bind("error", (err) => {
+    const details = err?.error?.data?.message || err?.error?.message || err?.message || "pusher_connection_error";
+    setStatus("Connection error", "bad");
+    log(`Pusher error: ${details}`);
+  });
+
+  state.pusher.connection.bind("state_change", (states) => {
+    if (!states?.current) return;
+    if (states.current === "connecting") {
+      setStatus("Connecting...");
+    }
+    if (states.current === "connected") {
+      setStatus("Socket connected, joining room...");
+    }
+    if (states.current === "unavailable" || states.current === "failed") {
+      setStatus("Realtime unavailable", "bad");
+    }
+  });
+
   state.channel = state.pusher.subscribe(state.channelName);
   bindChannel(state.channel);
+
+  state.connectWatchdog = setTimeout(() => {
+    if (!state.players.size) {
+      setStatus("Join failed: auth/room subscription issue", "bad");
+      log("No subscription success event. Check PUSHER env, room code, and pusher-auth response.");
+    }
+  }, 12000);
 
   els.entry.classList.add("hidden");
   els.game.classList.remove("hidden");
@@ -173,6 +205,11 @@ async function connectSession(session) {
 
 function bindChannel(channel) {
   channel.bind("pusher:subscription_succeeded", (members) => {
+    if (state.connectWatchdog) {
+      clearTimeout(state.connectWatchdog);
+      state.connectWatchdog = null;
+    }
+
     state.players = new Map();
     members.each((member) => {
       state.players.set(member.id, {
@@ -191,6 +228,16 @@ function bindChannel(channel) {
     setStatus("Connected");
     broadcastHead();
     render();
+  });
+
+  channel.bind("pusher:subscription_error", (status) => {
+    if (state.connectWatchdog) {
+      clearTimeout(state.connectWatchdog);
+      state.connectWatchdog = null;
+    }
+
+    setStatus(`Join denied (${status || "unknown"})`, "bad");
+    log(`Subscription error: ${status || "unknown"}.`);
   });
 
   channel.bind("pusher:member_added", (member) => {

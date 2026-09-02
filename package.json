@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vercel dev",
-    "start": "vercel dev"
+    "check:vercel-config": "node scripts/validate-vercel-config.mjs",
+    "dev": "npm run check:vercel-config && vercel dev",
+    "start": "npm run check:vercel-config && vercel dev"
   },
   "dependencies": {
     "pusher": "^5.2.0"

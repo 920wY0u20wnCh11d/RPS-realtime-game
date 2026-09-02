@@ -54,6 +54,11 @@ Then open the URL shown by `vercel dev`.
 3. Add env vars from `.env.example` in Vercel Project Settings.
 4. Deploy.
 
+### Deploy Troubleshooting
+
+- If deploy fails with `Function Runtimes must have a valid version`, remove custom `runtime` entries from `vercel.json` unless you are intentionally pinning a versioned runtime package (for example, `@vercel/node@x.y.z`).
+- For this project, let Vercel auto-detect Node serverless runtime and only keep safe function options such as `maxDuration`.
+
 ## Event Contracts
 
 - `client-round-start`: `{ roundId, deadline, active }`

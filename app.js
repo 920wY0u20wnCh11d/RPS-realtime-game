@@ -47,6 +47,7 @@ const state = {
   connectWatchdog: null,
   realtimeReady: false,
   players: new Map(),
+  playerNames: {},
   isHost: false,
   hostTicker: null,
   round: null,
@@ -175,6 +176,7 @@ async function connectSession(session) {
   state.me.t = session.token;
   state.roomCode = session.roomCode;
   state.channelName = session.channel;
+  rememberPlayerName(state.me.id, state.me.n);
 
   state.me.kp = await loadOrCreateKeys(state.me.id);
 
@@ -257,11 +259,13 @@ function bindChannel(channel) {
     state.realtimeReady = true;
     state.players = new Map();
     members.each((member) => {
+      const displayName = member.info?.n || "Player";
       state.players.set(member.id, {
         id: member.id,
-        n: member.info?.n || "Player",
+        n: displayName,
         r: member.info?.r || "guest",
       });
+      rememberPlayerName(member.id, displayName);
       ensureScore(member.id);
     });
 
@@ -288,11 +292,13 @@ function bindChannel(channel) {
   });
 
   channel.bind("pusher:member_added", (member) => {
+    const displayName = member.info?.n || "Player";
     state.players.set(member.id, {
       id: member.id,
-      n: member.info?.n || "Player",
+      n: displayName,
       r: member.info?.r || "guest",
     });
+    rememberPlayerName(member.id, displayName);
     ensureScore(member.id);
     recomputeHost();
     render();
@@ -948,7 +954,14 @@ function setStatus(msg, cls = "") {
 }
 
 function shortName(pid) {
-  return state.players.get(pid)?.n || pid.slice(0, 6);
+  return state.players.get(pid)?.n || state.playerNames[pid] || pid.slice(0, 6);
+}
+
+function rememberPlayerName(pid, name) {
+  if (!pid) return;
+  const clean = normalizeName(name || "");
+  if (!clean) return;
+  state.playerNames[pid] = clean;
 }
 
 function log(message) {
@@ -1131,6 +1144,11 @@ function hydrateStore() {
     state.ledger = Array.isArray(parsed.l) ? parsed.l : [];
     state.scores = parsed.sc || {};
     state.debts = parsed.db || {};
+    state.playerNames = parsed.pn || {};
+
+    if (state.me?.id && state.me?.n) {
+      rememberPlayerName(state.me.id, state.me.n);
+    }
   } catch {
     localStorage.removeItem(STORE_KEY);
   }
@@ -1143,6 +1161,7 @@ function saveStore() {
     l: state.ledger,
     sc: state.scores,
     db: state.debts,
+    pn: state.playerNames,
   };
 
   localStorage.setItem(STORE_KEY, JSON.stringify(compact));

@@ -58,6 +58,7 @@ Then open the URL shown by `vercel dev`.
 
 - If deploy fails with `Function Runtimes must have a valid version`, remove custom `runtime` entries from `vercel.json` unless you are intentionally pinning a versioned runtime package (for example, `@vercel/node@x.y.z`).
 - For this project, let Vercel auto-detect Node serverless runtime and only keep safe function options such as `maxDuration`.
+- GitHub Actions guard: `.github/workflows/vercel-config-guard.yml` runs `npm run check:vercel-config` on every push/PR to catch invalid runtime declarations before deploy.
 
 ## Event Contracts
 

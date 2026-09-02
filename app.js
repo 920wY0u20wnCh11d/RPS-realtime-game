@@ -47,6 +47,7 @@ const state = {
   isHost: false,
   hostTicker: null,
   round: null,
+  series: null,
   scores: {},
   debts: {},
   ledger: [],
@@ -294,11 +295,14 @@ function bindChannel(channel) {
 
     state.round = {
       id: payload.roundId,
+      seriesId: payload.seriesId || null,
       deadline: payload.deadline,
       submissions: {},
       active: payload.active || activePlayerIds(),
       resolved: false,
     };
+
+    els.timer.textContent = `${ROUND_SECONDS}s`;
 
     setStatus(`Round ${payload.roundId.slice(-4)} live`);
     render();
@@ -336,9 +340,41 @@ async function startRound() {
     return;
   }
 
+  if (state.series) {
+    setStatus("Elimination series already running", "warn");
+    return;
+  }
+
+  if (state.round) {
+    setStatus("Round already active", "warn");
+    return;
+  }
+
   const active = activePlayerIds();
   if (active.length < 2) {
     setStatus("Need at least 2 players", "warn");
+    return;
+  }
+
+  const seriesId = `s${Date.now().toString(36)}`;
+  state.series = {
+    id: seriesId,
+    participants: [...active],
+  };
+
+  await startHostedSubRound(active, seriesId);
+}
+
+async function startHostedSubRound(active, seriesId) {
+  if (!state.isHost || !state.channel || !state.realtimeReady) return;
+
+  const contenders = active.filter((pid) => state.players.has(pid));
+  if (contenders.length < 2) {
+    state.round = null;
+    state.series = null;
+    els.timer.textContent = `${ROUND_SECONDS}s`;
+    setStatus("Not enough active players", "warn");
+    render();
     return;
   }
 
@@ -347,13 +383,21 @@ async function startRound() {
 
   state.round = {
     id: roundId,
+    seriesId,
     deadline,
     submissions: {},
-    active,
+    active: contenders,
     resolved: false,
   };
 
-  await state.channel.trigger("client-round-start", { roundId, deadline, active });
+  els.timer.textContent = `${ROUND_SECONDS}s`;
+  await state.channel.trigger("client-round-start", {
+    roundId,
+    seriesId,
+    deadline,
+    active: contenders,
+  });
+
   hostTickerStart(roundId, deadline);
   setStatus(`Round ${roundId.slice(-4)} started`);
   render();
@@ -372,6 +416,7 @@ function hostTickerStart(roundId, deadline) {
     }
 
     const remain = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    els.timer.textContent = `${remain}s`;
     await state.channel.trigger("client-timer", { roundId, remain });
 
     if (remain <= 0) {
@@ -383,6 +428,11 @@ function hostTickerStart(roundId, deadline) {
 async function submitMove(move) {
   if (!state.round || !state.channel || !state.realtimeReady) {
     setStatus("Round inactive", "warn");
+    return;
+  }
+
+  if (!state.round.active.includes(state.me.id)) {
+    setStatus("You are spectating this elimination step", "warn");
     return;
   }
 
@@ -441,9 +491,11 @@ async function finalizeRound(reason) {
   if (!state.isHost || !state.round || state.round.resolved || !state.channel) return;
   state.round.resolved = true;
 
-  const missing = state.round.active.filter((pid) => !state.round.submissions[pid]);
+  const currentRound = state.round;
+
+  const missing = currentRound.active.filter((pid) => !currentRound.submissions[pid]);
   missing.forEach((pid) => {
-    state.round.submissions[pid] = {
+    currentRound.submissions[pid] = {
       pid,
       m: MOVES[Math.floor(Math.random() * MOVES.length)],
       a: 1,
@@ -452,59 +504,98 @@ async function finalizeRound(reason) {
     };
   });
 
-  const resolution = resolveRound(state.round.submissions, state.round.active);
+  const resolution = resolveRound(currentRound.submissions, currentRound.active);
 
-  if (!resolution.tie) {
-    resolution.w.forEach((pid) => {
-      ensureScore(pid).w += 1;
-    });
-    resolution.l.forEach((pid) => {
-      ensureScore(pid).l += 1;
-    });
-
-    createDebts(state.round.id, resolution.l, resolution.w);
-
-    const moveRows = state.round.active.map((pid) => {
-      const sub = state.round.submissions[pid];
+  const moveRows = currentRound.active.map((pid) => {
+      const sub = currentRound.submissions[pid];
       return { p: pid, m: sub.m, a: sub.a };
     });
 
-    const sig = {};
-    state.round.active.forEach((pid) => {
-      if (state.round.submissions[pid].s) {
-        sig[pid] = state.round.submissions[pid].s;
-      }
-    });
+  const sig = {};
+  currentRound.active.forEach((pid) => {
+    if (currentRound.submissions[pid].s) {
+      sig[pid] = currentRound.submissions[pid].s;
+    }
+  });
 
-    await appendLedgerBlock({
+  let phase = "tie";
+  let nextActive = [...currentRound.active];
+  let finalLoser = null;
+  const participants = state.series?.participants || [...currentRound.active];
+
+  if (!resolution.tie) {
+    if (resolution.l.length > 1) {
+      phase = "continue";
+      nextActive = [...resolution.l];
+    } else {
+      phase = "done";
+      finalLoser = resolution.l[0] || null;
+      const winners = participants.filter((pid) => pid !== finalLoser && state.players.has(pid));
+
+      winners.forEach((pid) => {
+        ensureScore(pid).w += 1;
+      });
+
+      if (finalLoser) {
+        ensureScore(finalLoser).l += 1;
+        createDebts(currentRound.seriesId || currentRound.id, [finalLoser], winners);
+      }
+    }
+  }
+
+  await appendLedgerBlock({
       k: "m",
-      r: state.round.id,
+      r: currentRound.id,
+      sid: currentRound.seriesId || null,
+      ph: phase,
       u: resolution.u,
       w: resolution.w,
       l: resolution.l,
       m: moveRows,
       why: reason,
     }, sig);
-  }
 
-  await state.channel.trigger("client-round-end", {
-    roundId: state.round.id,
+  const payload = {
+    roundId: currentRound.id,
+    seriesId: currentRound.seriesId || null,
+    phase,
+    finalLoser,
+    participants,
+    nextActive,
     tie: resolution.tie,
     u: resolution.u,
     w: resolution.w,
     l: resolution.l,
-    submissions: state.round.submissions,
+    submissions: currentRound.submissions,
     debts: state.debts,
     scores: state.scores,
-  });
+  };
+
+  await state.channel.trigger("client-round-end", payload);
 
   if (state.hostTicker) {
     clearInterval(state.hostTicker);
     state.hostTicker = null;
   }
 
+  applyOutcomePrompt(payload);
+
   state.round = null;
-  els.timer.textContent = `${ROUND_SECONDS}s`;
+
+  if (phase === "continue" || phase === "tie") {
+    const stillHost = state.isHost;
+    const sid = currentRound.seriesId;
+    setStatus(phase === "tie" ? "Draw, rerolling..." : "Elimination continues...");
+    setTimeout(() => {
+      if (!stillHost || !sid || !state.isHost || !state.realtimeReady) return;
+      startHostedSubRound(nextActive, sid);
+    }, 1200);
+  } else {
+    state.series = null;
+    els.timer.textContent = `${ROUND_SECONDS}s`;
+    setStatus("Series complete");
+  }
+
   saveStore();
   render();
 }
@@ -516,7 +607,7 @@ async function consumeRoundResult(payload) {
     state.scores = payload.scores || state.scores;
     state.debts = payload.debts || state.debts;
 
-    if (!payload.tie && payload.submissions) {
+    if (payload.submissions) {
       const sig = {};
       Object.keys(payload.submissions).forEach((pid) => {
         if (payload.submissions[pid].s) sig[pid] = payload.submissions[pid].s;
@@ -531,6 +622,8 @@ async function consumeRoundResult(payload) {
       await appendLedgerBlock({
         k: "m",
         r: payload.roundId,
+        sid: payload.seriesId || null,
+        ph: payload.phase || "done",
         u: payload.u,
         w: payload.w,
         l: payload.l,
@@ -539,16 +632,41 @@ async function consumeRoundResult(payload) {
     }
   }
 
-  if (payload.tie) {
+  applyOutcomePrompt(payload);
+
+  if (payload.phase === "tie") {
     log("Round tie (1 or 3 symbols). Re-roll.");
+    setStatus("Draw, rerolling...");
+  } else if (payload.phase === "continue") {
+    log(`Round done. Elimination continues with ${payload.nextActive.length} contenders.`);
+    setStatus("Elimination continues...");
   } else {
     log(`Round done. Winners: ${payload.w.length} / Losers: ${payload.l.length}`);
+    setStatus("Series complete");
   }
 
   state.round = null;
-  els.timer.textContent = `${ROUND_SECONDS}s`;
+  if (payload.phase === "done") {
+    state.series = null;
+    els.timer.textContent = `${ROUND_SECONDS}s`;
+  }
   saveStore();
   render();
+}
+
+function applyOutcomePrompt(payload) {
+  const phase = payload.phase || (payload.tie ? "tie" : "done");
+
+  let verdict = "DRAW";
+  if (phase === "continue") {
+    verdict = payload.nextActive?.includes(state.me.id) ? "LOSE - play again" : "WIN - safe";
+  } else if (phase === "done") {
+    verdict = payload.finalLoser === state.me.id ? "LOSE" : "WIN";
+  }
+
+  setTimeout(() => {
+    window.alert(`Round Result: ${verdict}`);
+  }, 0);
 }
 
 function resolveRound(submissions, active) {
@@ -745,7 +863,7 @@ function render() {
   renderDebts();
   renderLog();
 
-  els.startRoundBtn.disabled = !state.isHost;
+  els.startRoundBtn.disabled = !state.isHost || Boolean(state.round) || Boolean(state.series);
 }
 
 function renderHead() {

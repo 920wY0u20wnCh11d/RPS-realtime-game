@@ -5,7 +5,10 @@ function pusherPresenceAuth({ socketId, channel, userId, userInfo }) {
   const key = process.env.PUSHER_KEY;
   const secret = process.env.PUSHER_SECRET;
   if (!key || !secret) {
-    throw new Error("missing_pusher_env");
+    const missing = [];
+    if (!key) missing.push("PUSHER_KEY");
+    if (!secret) missing.push("PUSHER_SECRET");
+    throw new Error(`missing_pusher_env:${missing.join(",")}`);
   }
 
   const channelData = JSON.stringify({
@@ -31,7 +34,11 @@ export default async function handler(req, res) {
   const head = body?.head || null;
 
   if (!socketId || !channel || !token) {
-    json(res, 400, { ok: false, error: "missing_fields" });
+    const missing = [];
+    if (!socketId) missing.push("socket_id");
+    if (!channel) missing.push("channel_name");
+    if (!token) missing.push("token");
+    json(res, 400, { ok: false, error: "missing_fields", missing });
     return;
   }
 

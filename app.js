@@ -158,17 +158,40 @@ async function connectSession(session) {
 
   state.pusher = new Pusher(state.config.key, {
     cluster: state.config.cluster,
-    authEndpoint: "/api/pusher-auth",
-    auth: {
-      paramsProvider: () => ({
-        token: state.me.t,
-        head: ledgerHead(),
-      }),
+    authorizer: (channel) => ({
+      authorize: async (socketId, callback) => {
+        try {
+          const res = await fetch("/api/pusher-auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              socket_id: socketId,
+              channel_name: channel.name,
+              token: state.me.t,
+              head: ledgerHead(),
+            }),
+          });
+
+          const data = await res.json().catch(() => ({ ok: false, error: "bad_json" }));
+          if (!res.ok || !data?.auth) {
+            const reason = data?.error || `http_${res.status}`;
+            callback(new Error(reason), data);
+            return;
+          }
+
+          callback(null, data);
+        } catch (error) {
+          callback(error);
+        }
+      },
+    }),
+    channelAuthorization: {
+      transport: "ajax",
     },
   });
 
   state.pusher.connection.bind("error", (err) => {
-    const details = err?.error?.data?.message || err?.error?.message || err?.message || "pusher_connection_error";
+    const details = formatPusherError(err);
     setStatus("Connection error", "bad");
     log(`Pusher error: ${details}`);
   });
@@ -236,8 +259,9 @@ function bindChannel(channel) {
       state.connectWatchdog = null;
     }
 
-    setStatus(`Join denied (${status || "unknown"})`, "bad");
-    log(`Subscription error: ${status || "unknown"}.`);
+    const details = formatPusherError(status);
+    setStatus(`Join denied (${details.slice(0, 52)})`, "bad");
+    log(`Subscription error: ${details}.`);
   });
 
   channel.bind("pusher:member_added", (member) => {
@@ -809,6 +833,31 @@ async function api(url, body) {
 
 function normalizeName(name) {
   return String(name || "").trim().replace(/\s+/g, " ").slice(0, 20);
+}
+
+function formatPusherError(value) {
+  if (value == null) return "unknown";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  const best =
+    value?.error?.data?.error ||
+    value?.error?.data?.message ||
+    value?.error?.message ||
+    value?.message ||
+    value?.type;
+
+  if (best) {
+    const status = value?.status || value?.error?.data?.status;
+    return status ? `${best} (status ${status})` : String(best);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "unreadable_error";
+  }
 }
 
 function hydrateStore() {

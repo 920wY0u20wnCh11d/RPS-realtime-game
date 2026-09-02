@@ -1,5 +1,6 @@
 const MAX_PLAYERS = 32;
 const ROUND_SECONDS = 10;
+const TURN_LIMIT = 8;
 const STORE_KEY = "rps8.v1";
 const GENESIS = "GEN-0";
 
@@ -16,6 +17,8 @@ const els = {
   joinBtn: document.getElementById("joinBtn"),
   roomCode: document.getElementById("roomCode"),
   timer: document.getElementById("timer"),
+  roundSecondsInput: document.getElementById("roundSecondsInput"),
+  turnLimitInput: document.getElementById("turnLimitInput"),
   head: document.getElementById("head"),
   status: document.getElementById("status"),
   startRoundBtn: document.getElementById("startRoundBtn"),
@@ -48,6 +51,10 @@ const state = {
   hostTicker: null,
   round: null,
   series: null,
+  settings: {
+    roundSeconds: ROUND_SECONDS,
+    turnLimit: TURN_LIMIT,
+  },
   scores: {},
   debts: {},
   ledger: [],
@@ -91,12 +98,34 @@ function bindUi() {
     const debtId = target.dataset.confirm;
     if (!debtId || !state.channel) return;
 
-    await state.channel.trigger("client-debt-confirm", {
+    const payload = {
       id: debtId,
       by: state.me.id,
       ts: Date.now(),
-    });
+    };
+
+    // Client events are not echoed back to sender; update local state first.
+    await consumeDebtConfirm(payload);
+
+    await state.channel.trigger("client-debt-confirm", payload);
   });
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function readHostSettingsFromInputs() {
+  const roundSeconds = clampInt(els.roundSecondsInput?.value, 3, 30, ROUND_SECONDS);
+  const turnLimit = clampInt(els.turnLimitInput?.value, 1, 20, TURN_LIMIT);
+
+  state.settings.roundSeconds = roundSeconds;
+  state.settings.turnLimit = turnLimit;
+
+  if (els.roundSecondsInput) els.roundSecondsInput.value = String(roundSeconds);
+  if (els.turnLimitInput) els.turnLimitInput.value = String(turnLimit);
 }
 
 async function createRoomFlow() {
@@ -293,6 +322,13 @@ function bindChannel(channel) {
   channel.bind("client-round-start", (payload) => {
     if (!payload || !payload.roundId || !payload.deadline) return;
 
+    const rs = clampInt(payload.roundSeconds, 3, 30, ROUND_SECONDS);
+    const tl = clampInt(payload.maxTurns, 1, 20, TURN_LIMIT);
+    state.settings.roundSeconds = rs;
+    state.settings.turnLimit = tl;
+    if (els.roundSecondsInput) els.roundSecondsInput.value = String(rs);
+    if (els.turnLimitInput) els.turnLimitInput.value = String(tl);
+
     state.round = {
       id: payload.roundId,
       seriesId: payload.seriesId || null,
@@ -302,7 +338,7 @@ function bindChannel(channel) {
       resolved: false,
     };
 
-    els.timer.textContent = `${ROUND_SECONDS}s`;
+    els.timer.textContent = `${state.settings.roundSeconds}s`;
 
     setStatus(`Round ${payload.roundId.slice(-4)} live`);
     render();
@@ -356,9 +392,13 @@ async function startRound() {
     return;
   }
 
+  readHostSettingsFromInputs();
+
   const seriesId = `s${Date.now().toString(36)}`;
   state.series = {
     id: seriesId,
+    turn: 1,
+    maxTurns: state.settings.turnLimit,
     participants: [...active],
   };
 
@@ -372,14 +412,14 @@ async function startHostedSubRound(active, seriesId) {
   if (contenders.length < 2) {
     state.round = null;
     state.series = null;
-    els.timer.textContent = `${ROUND_SECONDS}s`;
+    els.timer.textContent = `${state.settings.roundSeconds}s`;
     setStatus("Not enough active players", "warn");
     render();
     return;
   }
 
   const roundId = `r${Date.now().toString(36)}`;
-  const deadline = Date.now() + ROUND_SECONDS * 1000;
+  const deadline = Date.now() + state.settings.roundSeconds * 1000;
 
   state.round = {
     id: roundId,
@@ -390,10 +430,13 @@ async function startHostedSubRound(active, seriesId) {
     resolved: false,
   };
 
-  els.timer.textContent = `${ROUND_SECONDS}s`;
+  els.timer.textContent = `${state.settings.roundSeconds}s`;
   await state.channel.trigger("client-round-start", {
     roundId,
     seriesId,
+    turn: state.series?.turn || 1,
+    maxTurns: state.series?.maxTurns || state.settings.turnLimit,
+    roundSeconds: state.settings.roundSeconds,
     deadline,
     active: contenders,
   });
@@ -504,7 +547,25 @@ async function finalizeRound(reason) {
     };
   });
 
-  const resolution = resolveRound(currentRound.submissions, currentRound.active);
+  let resolution = resolveRound(currentRound.submissions, currentRound.active);
+
+  if (!resolution.tie) {
+    const timeoutLosers = currentRound.active.filter((pid) => currentRound.submissions[pid]?.a === 1);
+    if (timeoutLosers.length) {
+      const loserSet = new Set([...resolution.l, ...timeoutLosers]);
+      const winners = currentRound.active.filter((pid) => !loserSet.has(pid));
+      if (winners.length) {
+        resolution = {
+          tie: false,
+          u: resolution.u,
+          w: winners,
+          l: Array.from(loserSet),
+        };
+      } else {
+        resolution = { tie: true, u: resolution.u, w: [], l: [] };
+      }
+    }
+  }
 
   const moveRows = currentRound.active.map((pid) => {
       const sub = currentRound.submissions[pid];
@@ -521,6 +582,7 @@ async function finalizeRound(reason) {
   let phase = "tie";
   let nextActive = [...currentRound.active];
   let finalLoser = null;
+  let forcedByTurnLimit = false;
   const participants = state.series?.participants || [...currentRound.active];
 
   if (!resolution.tie) {
@@ -543,11 +605,32 @@ async function finalizeRound(reason) {
     }
   }
 
+  const turnNow = state.series?.turn || 1;
+  const maxTurns = state.series?.maxTurns || state.settings.turnLimit;
+  if ((phase === "continue" || phase === "tie") && turnNow >= maxTurns) {
+    forcedByTurnLimit = true;
+    phase = "done";
+    const pool = nextActive.length ? nextActive : [...currentRound.active];
+    finalLoser = pool[Math.floor(Math.random() * pool.length)] || null;
+    const winners = participants.filter((pid) => pid !== finalLoser && state.players.has(pid));
+
+    winners.forEach((pid) => {
+      ensureScore(pid).w += 1;
+    });
+
+    if (finalLoser) {
+      ensureScore(finalLoser).l += 1;
+      createDebts(currentRound.seriesId || currentRound.id, [finalLoser], winners);
+    }
+  }
+
   await appendLedgerBlock({
       k: "m",
       r: currentRound.id,
       sid: currentRound.seriesId || null,
       ph: phase,
+      tm: state.settings.roundSeconds,
+      tl: maxTurns,
       u: resolution.u,
       w: resolution.w,
       l: resolution.l,
@@ -559,6 +642,10 @@ async function finalizeRound(reason) {
     roundId: currentRound.id,
     seriesId: currentRound.seriesId || null,
     phase,
+    turn: turnNow,
+    maxTurns,
+    roundSeconds: state.settings.roundSeconds,
+    forcedByTurnLimit,
     finalLoser,
     participants,
     nextActive,
@@ -588,11 +675,14 @@ async function finalizeRound(reason) {
     setStatus(phase === "tie" ? "Draw, rerolling..." : "Elimination continues...");
     setTimeout(() => {
       if (!stillHost || !sid || !state.isHost || !state.realtimeReady) return;
+      if (state.series) {
+        state.series.turn = (state.series.turn || 1) + 1;
+      }
       startHostedSubRound(nextActive, sid);
     }, 1200);
   } else {
     state.series = null;
-    els.timer.textContent = `${ROUND_SECONDS}s`;
+    els.timer.textContent = `${state.settings.roundSeconds}s`;
     setStatus("Series complete");
   }
 
@@ -624,6 +714,8 @@ async function consumeRoundResult(payload) {
         r: payload.roundId,
         sid: payload.seriesId || null,
         ph: payload.phase || "done",
+        tm: payload.roundSeconds || state.settings.roundSeconds,
+        tl: payload.maxTurns || state.settings.turnLimit,
         u: payload.u,
         w: payload.w,
         l: payload.l,
@@ -645,10 +737,14 @@ async function consumeRoundResult(payload) {
     setStatus("Series complete");
   }
 
+  if (payload.forcedByTurnLimit) {
+    log("Turn limit reached. Final loser selected to close series.");
+  }
+
   state.round = null;
   if (payload.phase === "done") {
     state.series = null;
-    els.timer.textContent = `${ROUND_SECONDS}s`;
+    els.timer.textContent = `${state.settings.roundSeconds}s`;
   }
   saveStore();
   render();
@@ -656,12 +752,18 @@ async function consumeRoundResult(payload) {
 
 function applyOutcomePrompt(payload) {
   const phase = payload.phase || (payload.tie ? "tie" : "done");
+  const mine = payload.submissions?.[state.me.id];
+  const timedOut = mine?.a === 1;
 
   let verdict = "DRAW";
   if (phase === "continue") {
     verdict = payload.nextActive?.includes(state.me.id) ? "LOSE - play again" : "WIN - safe";
   } else if (phase === "done") {
     verdict = payload.finalLoser === state.me.id ? "LOSE" : "WIN";
+  }
+
+  if (timedOut && phase !== "tie") {
+    verdict = "LOSE - no choice submitted";
   }
 
   setTimeout(() => {
@@ -858,12 +960,42 @@ function log(message) {
 function render() {
   els.roomCode.textContent = state.roomCode || "----";
   renderHead();
+  renderMoveSelection();
   renderLobby();
   renderBoard();
   renderDebts();
   renderLog();
 
+  if (els.roundSecondsInput) {
+    els.roundSecondsInput.disabled = !state.isHost || Boolean(state.round) || Boolean(state.series);
+    els.roundSecondsInput.value = String(state.settings.roundSeconds);
+  }
+
+  if (els.turnLimitInput) {
+    els.turnLimitInput.disabled = !state.isHost || Boolean(state.round) || Boolean(state.series);
+    els.turnLimitInput.value = String(state.settings.turnLimit);
+  }
+
   els.startRoundBtn.disabled = !state.isHost || Boolean(state.round) || Boolean(state.series);
+}
+
+function renderMoveSelection() {
+  const myMove = state.round?.submissions?.[state.me.id]?.m || "";
+  const isLocked = Boolean(myMove);
+
+  els.moveButtons.forEach((btn) => {
+    const selected = btn.dataset.move === myMove;
+    btn.classList.toggle("move-selected", selected);
+    btn.classList.toggle("move-locked", isLocked && !selected);
+
+    if (!state.round || !state.realtimeReady) {
+      btn.disabled = true;
+      return;
+    }
+
+    const canPlay = state.round.active.includes(state.me.id);
+    btn.disabled = !canPlay || isLocked;
+  });
 }
 
 function renderHead() {

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>8-Bit RPS Wager Arena</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="title-wrap">
+        <h1>RPS WAGER // 8-BIT</h1>
+        <p class="subtitle">Real-time 2-32 player showdown</p>
+      </header>
+
+      <section id="entry" class="panel">
+        <label class="label" for="nameInput">Player Name</label>
+        <input id="nameInput" maxlength="20" placeholder="ArcadeHero" />
+        <div class="row">
+          <button id="createBtn" class="btn">Host Room</button>
+          <button id="joinBtn" class="btn btn-alt">Join Room</button>
+        </div>
+        <div id="joinFields" class="join-fields hidden">
+          <label class="label" for="roomInput">4-Digit Code</label>
+          <input id="roomInput" inputmode="numeric" maxlength="4" placeholder="1234" />
+        </div>
+      </section>
+
+      <section id="game" class="hidden">
+        <div class="panel info-grid">
+          <div>
+            <p class="mini">Room</p>
+            <p id="roomCode" class="metric">----</p>
+          </div>
+          <div>
+            <p class="mini">Round Timer</p>
+            <p id="timer" class="metric">10s</p>
+          </div>
+          <div>
+            <p class="mini">Ledger Head</p>
+            <p id="head" class="metric hash">GEN-0</p>
+          </div>
+          <div>
+            <p class="mini">Status</p>
+            <p id="status" class="metric">Waiting</p>
+          </div>
+        </div>
+
+        <section class="panel">
+          <p class="mini">Choose Your Move</p>
+          <div class="move-row">
+            <button data-move="R" class="btn move">🪨 Rock</button>
+            <button data-move="P" class="btn move">📄 Paper</button>
+            <button data-move="S" class="btn move">✂️ Scissors</button>
+          </div>
+          <div class="row">
+            <button id="startRoundBtn" class="btn">Start Round</button>
+            <button id="broadcastHeadBtn" class="btn btn-alt">Verify Heads</button>
+          </div>
+        </section>
+
+        <section class="panel split">
+          <div>
+            <h2>Lobby (Max 32)</h2>
+            <ul id="lobbyList" class="scroll-list"></ul>
+          </div>
+          <div>
+            <h2>Leaderboard</h2>
+            <ul id="boardList" class="scroll-list"></ul>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Drink Debts 🍺</h2>
+          <ul id="debtsList" class="scroll-list debts"></ul>
+        </section>
+
+        <section class="panel">
+          <h2>Event Log</h2>
+          <ul id="logList" class="scroll-list"></ul>
+        </section>
+      </section>
+    </main>
+
+    <script src="https://js.pusher.com/8.4.0/pusher.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

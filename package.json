@@ -1,0 +1,13 @@
+{
+  "name": "rps-realtime-game",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "vercel dev"
+  },
+  "dependencies": {
+    "pusher": "^5.2.0"
+  }
+}

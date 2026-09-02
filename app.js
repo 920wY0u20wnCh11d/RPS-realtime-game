@@ -42,6 +42,7 @@ const state = {
   pusher: null,
   channel: null,
   connectWatchdog: null,
+  realtimeReady: false,
   players: new Map(),
   isHost: false,
   hostTicker: null,
@@ -156,37 +157,23 @@ async function connectSession(session) {
     state.connectWatchdog = null;
   }
 
+  state.realtimeReady = false;
+
+  const authParams = () => ({
+    token: state.me.t,
+    head: ledgerHead(),
+  });
+
   state.pusher = new Pusher(state.config.key, {
     cluster: state.config.cluster,
-    authorizer: (channel) => ({
-      authorize: async (socketId, callback) => {
-        try {
-          const res = await fetch("/api/pusher-auth", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              socket_id: socketId,
-              channel_name: channel.name,
-              token: state.me.t,
-              head: ledgerHead(),
-            }),
-          });
-
-          const data = await res.json().catch(() => ({ ok: false, error: "bad_json" }));
-          if (!res.ok || !data?.auth) {
-            const reason = data?.error || `http_${res.status}`;
-            callback(new Error(reason), data);
-            return;
-          }
-
-          callback(null, data);
-        } catch (error) {
-          callback(error);
-        }
-      },
-    }),
+    authEndpoint: "/api/pusher-auth",
+    auth: {
+      paramsProvider: authParams,
+    },
     channelAuthorization: {
+      endpoint: "/api/pusher-auth",
       transport: "ajax",
+      paramsProvider: authParams,
     },
   });
 
@@ -205,7 +192,11 @@ async function connectSession(session) {
       setStatus("Socket connected, joining room...");
     }
     if (states.current === "unavailable" || states.current === "failed") {
+      state.realtimeReady = false;
       setStatus("Realtime unavailable", "bad");
+    }
+    if (states.current === "disconnected") {
+      state.realtimeReady = false;
     }
   });
 
@@ -233,6 +224,7 @@ function bindChannel(channel) {
       state.connectWatchdog = null;
     }
 
+    state.realtimeReady = true;
     state.players = new Map();
     members.each((member) => {
       state.players.set(member.id, {
@@ -259,6 +251,7 @@ function bindChannel(channel) {
       state.connectWatchdog = null;
     }
 
+    state.realtimeReady = false;
     const details = formatPusherError(status);
     setStatus(`Join denied (${details.slice(0, 52)})`, "bad");
     log(`Subscription error: ${details}.`);
@@ -338,7 +331,7 @@ function recomputeHost() {
 }
 
 async function startRound() {
-  if (!state.isHost || !state.channel) {
+  if (!state.isHost || !state.channel || !state.realtimeReady) {
     setStatus("Only host can start", "warn");
     return;
   }
@@ -388,7 +381,7 @@ function hostTickerStart(roundId, deadline) {
 }
 
 async function submitMove(move) {
-  if (!state.round || !state.channel) {
+  if (!state.round || !state.channel || !state.realtimeReady) {
     setStatus("Round inactive", "warn");
     return;
   }
@@ -701,7 +694,11 @@ async function resealLedger(chain) {
 }
 
 function broadcastHead() {
-  if (!state.channel) return;
+  if (!state.channel || !state.realtimeReady) {
+    setStatus("Not connected yet", "warn");
+    return;
+  }
+
   state.channel.trigger("client-ledger-head", {
     pid: state.me.id,
     head: ledgerHead(),

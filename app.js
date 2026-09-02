@@ -393,15 +393,20 @@ async function submitMove(move) {
     return;
   }
 
-  const signed = await signString(`${state.round.id}:${move}`);
-  await state.channel.trigger("client-move", {
-    roundId: state.round.id,
+  const roundId = state.round.id;
+  const signed = await signString(`${roundId}:${move}`);
+  const payload = {
+    roundId,
     pid: state.me.id,
     m: move,
     a: 0,
     s: signed,
     pk: state.me.kp?.pu || null,
-  });
+  };
+
+  // Client events are not echoed back to sender; apply local submission first.
+  consumeMove(payload);
+  await state.channel.trigger("client-move", payload);
 
   setStatus(`Locked ${MOVE_LABEL[move]}`);
 }
